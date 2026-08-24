@@ -1,0 +1,381 @@
+#!/usr/bin/env bash
+
+set -uo pipefail
+
+readonly plugin_id="io.github.legibet.popup-translator"
+readonly request_id="$(date +%s%N)-$$"
+readonly selection_limit=5000
+readonly request_timeout_seconds=45
+readonly shell_config="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.json"
+readonly api_key_file="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-popup-translator/api-key"
+
+show_ui=true
+provider="bing"
+provider_name="Bing"
+configured_target="zh-CN"
+ai_base_url="https://api.openai.com/v1"
+ai_model="gpt-5.6"
+position_json='{"monitor":"","x":24,"y":24,"reservedLeft":0,"reservedTop":0,"reservedRight":0,"reservedBottom":0}'
+selected_text=""
+translation=""
+direction=""
+target_language=""
+ui_started=false
+
+notify_fallback() {
+  local urgency="$1"
+  local title="$2"
+  local body="${3:-}"
+
+  if command -v omarchy-notification-send >/dev/null 2>&1; then
+    omarchy-notification-send -g "󰗊" -u "$urgency" --app-name popup-translator "$title" "$body"
+  else
+    notify-send -u "$urgency" -a popup-translator "$title" "$body"
+  fi
+}
+
+trim() {
+  local value="$1"
+  value="${value#"${value%%[!$' \t\r\n']*}"}"
+  value="${value%"${value##*[!$' \t\r\n']}"}"
+  printf '%s' "$value"
+}
+
+usage() {
+  printf '%s\n' \
+    'Usage: popup-translator [--stdout] [TEXT]' \
+    '' \
+    'Without TEXT, translate the text currently highlighted in Wayland.' \
+    'The source language is detected by the translation provider.' \
+    '' \
+    'Open the Popup Translator bar icon to configure language and provider.'
+}
+
+load_settings() {
+  local values=()
+
+  [[ -f $shell_config ]] || return
+  mapfile -t values < <(jq -r --arg id "$plugin_id" '
+    [
+      (.bar.layout.left // [])[],
+      (.bar.layout.center // [])[],
+      (.bar.layout.right // [])[]
+    ]
+    | map(select(.id == $id))
+    | first // {}
+    | (.provider // "bing"),
+      (.targetLanguage // "zh-CN"),
+      (.aiBaseUrl // "https://api.openai.com/v1"),
+      (.aiModel // "gpt-5.6")
+  ' "$shell_config" 2>/dev/null)
+
+  [[ ${values[0]:-} == ai ]] && provider="ai"
+  case "${values[1]:-}" in
+    zh-CN | en | ja | ko | fr | de | es) configured_target="${values[1]}" ;;
+  esac
+  [[ -n ${values[2]:-} ]] && ai_base_url="${values[2]%/}"
+  [[ -n ${values[3]:-} ]] && ai_model="${values[3]}"
+
+  if [[ $provider == ai ]]; then
+    provider_name="AI · $ai_model"
+  fi
+}
+
+capture_position() {
+  local cursor_json monitors_json
+
+  cursor_json="$(hyprctl -j cursorpos 2>/dev/null || true)"
+  monitors_json="$(hyprctl -j monitors 2>/dev/null || true)"
+
+  if ! jq -e . >/dev/null 2>&1 <<<"$cursor_json" || ! jq -e . >/dev/null 2>&1 <<<"$monitors_json"; then
+    return
+  fi
+
+  position_json="$(jq -cn \
+    --argjson cursor "$cursor_json" \
+    --argjson monitors "$monitors_json" '
+      (
+        ($monitors
+          | map(select(
+              $cursor.x >= .x
+              and $cursor.y >= .y
+              and $cursor.x < (.x + (.width / .scale))
+              and $cursor.y < (.y + (.height / .scale))))
+          | first)
+        // ($monitors | map(select(.focused)) | first)
+        // {}
+      ) as $monitor
+      | ($monitor.reserved // [0, 0, 0, 0]) as $reserved
+      | {
+          monitor: ($monitor.name // ""),
+          x: ($cursor.x - ($monitor.x // 0)),
+          y: ($cursor.y - ($monitor.y // 0)),
+          reservedLeft: ($reserved[0] // 0),
+          reservedTop: ($reserved[1] // 0),
+          reservedRight: ($reserved[2] // 0),
+          reservedBottom: ($reserved[3] // 0)
+        }
+    ')"
+}
+
+language_label() {
+  case "${1,,}" in
+    zh | zh-* ) printf '%s' "Simplified Chinese" ;;
+    en | en-* ) printf '%s' "English" ;;
+    ja | ja-* ) printf '%s' "Japanese" ;;
+    ko | ko-* ) printf '%s' "Korean" ;;
+    fr | fr-* ) printf '%s' "French" ;;
+    de | de-* ) printf '%s' "German" ;;
+    es | es-* ) printf '%s' "Spanish" ;;
+  esac
+}
+
+panel_update() {
+  local state="$1"
+  local begins="$2"
+  local result_text="${3:-}"
+  local error_text="${4:-}"
+  local payload summon_result
+
+  payload="$(jq -cn \
+    --arg requestId "$request_id" \
+    --arg state "$state" \
+    --arg source "$selected_text" \
+    --arg translation "$result_text" \
+    --arg error "$error_text" \
+    --arg direction "$direction" \
+    --arg provider "$provider_name" \
+    --argjson begin "$begins" \
+    --argjson position "$position_json" '
+      {
+        requestId: $requestId,
+        state: $state,
+        begin: $begin,
+        source: $source,
+        translation: $translation,
+        error: $error,
+        direction: $direction,
+        provider: $provider,
+        monitor: $position.monitor,
+        x: $position.x,
+        y: $position.y,
+        reservedLeft: $position.reservedLeft,
+        reservedTop: $position.reservedTop,
+        reservedRight: $position.reservedRight,
+        reservedBottom: $position.reservedBottom
+      }
+    ')"
+
+  summon_result="$(omarchy-shell shell summon "$plugin_id" "$payload" 2>/dev/null || true)"
+  [[ $summon_result == ok ]]
+}
+
+show_error() {
+  local message="$1"
+
+  if $show_ui; then
+    if $ui_started; then
+      panel_update error false "" "$message" || notify_fallback critical "Translation failed" "$message"
+    elif panel_update error true "" "$message"; then
+      ui_started=true
+    else
+      notify_fallback critical "Translation failed" "$message"
+    fi
+  else
+    printf '%s\n' "$message" >&2
+  fi
+}
+
+translate_with_bing() {
+  local status
+
+  if ! command -v trans >/dev/null 2>&1; then
+    show_error "Translation backend is missing. Run: omarchy pkg add translate-shell"
+    return 1
+  fi
+
+  translation="$(
+    timeout "$request_timeout_seconds" \
+      trans -e bing -b -no-ansi ":$target_language" "$selected_text" 2>/dev/null
+  )"
+  status=$?
+  translation="$(trim "$translation")"
+
+  if ((status != 0)) || [[ -z $translation ]]; then
+    show_error "Translation failed. Check your network connection and try again."
+    return 1
+  fi
+}
+
+read_ai_api_key() {
+  if [[ $ai_base_url == https://api.openai.com/v1 && -n ${OPENAI_API_KEY:-} ]]; then
+    printf '%s' "$OPENAI_API_KEY"
+  elif [[ -s $api_key_file ]]; then
+    IFS= read -r REPLY <"$api_key_file"
+    printf '%s' "$REPLY"
+  fi
+}
+
+translate_with_ai() {
+  local api_key request_file header_file response_file error_file
+  local stream_fd stream_pid status line data delta api_error=""
+  local published_length=0
+  local -a curl_args
+
+  if ! command -v curl >/dev/null 2>&1; then
+    show_error "AI translation requires curl."
+    return 1
+  fi
+
+  api_key="$(read_ai_api_key)"
+
+  umask 077
+  request_file="$(mktemp)"
+  header_file="$(mktemp)"
+  response_file="$(mktemp)"
+  error_file="$(mktemp)"
+  trap 'rm -f -- "$request_file" "$header_file" "$response_file" "$error_file"' EXIT
+
+  jq -n \
+    --arg model "$ai_model" \
+    --arg target "$(language_label "$target_language")" \
+    --arg input "$selected_text" '
+      {
+        model: $model,
+        messages: [
+          {
+            role: "system",
+            content: (
+              "Translate the user text into " + $target +
+              ". Return only the translation. Preserve meaning, tone, names, and formatting."
+            )
+          },
+          {role: "user", content: $input}
+        ],
+        stream: true
+      }
+    ' >"$request_file"
+
+  curl_args=(
+    --no-buffer
+    --silent
+    --show-error
+    --fail-with-body
+    --request POST
+    --url "${ai_base_url%/}/chat/completions"
+    --header 'Content-Type: application/json'
+    --data-binary "@$request_file"
+  )
+  if [[ -n $api_key ]]; then
+    printf 'Authorization: Bearer %s\n' "$api_key" >"$header_file"
+    curl_args+=(--header "@$header_file")
+  fi
+
+  coproc AI_REQUEST {
+    timeout "$request_timeout_seconds" \
+      curl "${curl_args[@]}" 2>"$error_file"
+  }
+  stream_pid="$AI_REQUEST_PID"
+  exec {stream_fd}<&"${AI_REQUEST[0]}"
+
+  while IFS= read -r -u "$stream_fd" line; do
+    printf '%s\n' "$line" >>"$response_file"
+    [[ $line == data:* ]] || continue
+    data="${line#data: }"
+    [[ $data != "[DONE]" ]] || continue
+
+    api_error="$(jq -r '.error.message // empty' <<<"$data" 2>/dev/null)"
+    delta="$(jq -r '.choices[0].delta.content // empty' <<<"$data" 2>/dev/null)"
+    [[ -n $delta ]] || continue
+
+    translation+="$delta"
+    if $show_ui && $ui_started \
+        && ((published_length == 0 || ${#translation} - published_length >= 12)); then
+      panel_update streaming false "$translation" "" || true
+      published_length=${#translation}
+    fi
+  done
+  exec {stream_fd}<&-
+
+  wait "$stream_pid"
+  status=$?
+  translation="$(trim "$translation")"
+
+  if ((status != 0)) || [[ -z $translation ]]; then
+    if [[ -z $api_error ]]; then
+      api_error="$(jq -r '.error.message // empty' "$response_file" 2>/dev/null)"
+    fi
+    if [[ -z $api_error ]]; then
+      api_error="$(<"$error_file")"
+    fi
+    api_error="$(trim "$api_error")"
+    show_error "${api_error:-AI translation failed. Check the Base URL, API key, model, and network.}"
+    rm -f -- "$request_file" "$header_file" "$response_file" "$error_file"
+    trap - EXIT
+    return 1
+  fi
+
+  rm -f -- "$request_file" "$header_file" "$response_file" "$error_file"
+  trap - EXIT
+}
+
+case "${1:-}" in
+  --stdout)
+    show_ui=false
+    shift
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+esac
+
+load_settings
+
+if $show_ui; then
+  capture_position
+fi
+
+if (($# > 0)); then
+  selected_text="$*"
+else
+  selected_text="$(timeout 1 wl-paste --primary --no-newline 2>/dev/null || true)"
+fi
+
+selected_text="$(trim "$selected_text")"
+
+if [[ -z $selected_text ]]; then
+  show_error "No highlighted text found. Highlight some text and try again."
+  exit 1
+fi
+
+if ((${#selected_text} > selection_limit)); then
+  show_error "The highlighted text is too long. The current limit is $selection_limit characters."
+  exit 1
+fi
+
+target_language="$configured_target"
+direction="→ $(language_label "$target_language")"
+
+if $show_ui; then
+  if panel_update loading true; then
+    ui_started=true
+  else
+    notify_fallback critical "Unable to open translation popup" "Make sure Popup Translator is enabled."
+  fi
+fi
+
+case "$provider" in
+  bing) translate_with_bing || exit 1 ;;
+  ai) translate_with_ai || exit 1 ;;
+esac
+
+if $show_ui; then
+  if $ui_started; then
+    panel_update ready false "$translation" "" || notify_fallback normal "Translation" "$translation"
+  else
+    notify_fallback normal "Translation" "$translation"
+  fi
+else
+  printf '%s\n' "$translation"
+fi

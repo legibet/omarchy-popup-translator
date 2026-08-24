@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.legibet.popup-translator",
+  "name": "Popup Translator",
+  "version": "0.1.0",
+  "author": "legibet",
+  "license": "MIT",
+  "description": "Translate highlighted text in a compact popup with a keyboard shortcut",
+  "kinds": ["bar-widget", "panel"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "barWidget": "BarWidget.qml",
+    "panel": "TranslationOverlay.qml"
+  },
+  "barWidget": {
+    "displayName": "Popup Translator",
+    "description": "Configure popup translation",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "provider": "bing",
+      "targetLanguage": "zh-CN",
+      "aiBaseUrl": "https://api.openai.com/v1",
+      "aiModel": "gpt-5.6"
+    }
+  }
+}
