@@ -16,7 +16,8 @@ readonly base_url_limit_bytes=2048
 readonly model_limit_bytes=256
 readonly api_key_limit_bytes=8192
 readonly shell_config="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.json"
-readonly credentials_file="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-popup-translator/credentials.json"
+readonly credentials_dir="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-popup-translator"
+readonly credentials_file="$credentials_dir/credentials.json"
 
 show_ui=true
 provider="bing"
@@ -272,6 +273,8 @@ read_ai_api_key() {
   fi
 
   [[ -s $credentials_file ]] || return 0
+  [[ -d $credentials_dir && ! -L $credentials_dir ]] || return 1
+  [[ -f $credentials_file && ! -L $credentials_file ]] || return 1
   credentials="$(read_limited_file "$credentials_file" "$credentials_limit_bytes")" || return 1
   jq -e \
     --argjson baseUrlLimit "$base_url_limit_bytes" \

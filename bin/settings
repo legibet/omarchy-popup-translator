@@ -66,6 +66,8 @@ widget_settings() {
 read_credentials() {
   local credentials
 
+  [[ -d $config_dir && ! -L $config_dir ]] || return 1
+  [[ -f $credentials_file && ! -L $credentials_file ]] || return 1
   credentials="$(read_limited_file "$credentials_file" "$credentials_limit_bytes")" || return 1
   jq -e \
     --argjson baseUrlLimit "$base_url_limit_bytes" \
@@ -119,6 +121,11 @@ save_credentials() {
   local api_key="$3"
   local credentials stored_base_url=""
 
+  if [[ -e $config_dir || -L $config_dir ]]; then
+    [[ -d $config_dir && ! -L $config_dir ]] \
+      || fail "Credentials directory must be a regular directory."
+  fi
+
   case "$action" in
     keep)
       if [[ -s $credentials_file ]]; then
@@ -129,12 +136,26 @@ save_credentials() {
       fi
       ;;
     set)
-      mkdir -p "$config_dir"
-      chmod 700 "$config_dir"
-      umask 077
-      jq -cn --arg baseUrl "$base_url" --arg apiKey "$api_key" \
-        '{baseUrl: $baseUrl, apiKey: $apiKey}' >"$credentials_file"
-      chmod 600 "$credentials_file"
+      if [[ ! -e $config_dir ]]; then
+        mkdir -m 700 -- "$config_dir"
+      fi
+      chmod 700 -- "$config_dir"
+
+      if [[ -e $credentials_file || -L $credentials_file ]]; then
+        [[ -f $credentials_file && ! -L $credentials_file ]] \
+          || fail "Credentials path must be a regular file."
+      fi
+
+      (
+        local temp_file
+        umask 077
+        temp_file="$(mktemp "$config_dir/.credentials.XXXXXX")"
+        trap 'rm -f -- "$temp_file"' EXIT
+        jq -cn --arg baseUrl "$base_url" --arg apiKey "$api_key" \
+          '{baseUrl: $baseUrl, apiKey: $apiKey}' >"$temp_file"
+        mv -T -- "$temp_file" "$credentials_file"
+        trap - EXIT
+      )
       ;;
     clear)
       rm -f -- "$credentials_file"
