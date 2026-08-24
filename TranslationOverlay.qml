@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls as Controls
 import Quickshell
 import Quickshell.Wayland
 import qs.Commons
@@ -169,6 +170,11 @@ Item {
         readonly property real maxY: panel.height - root.reservedBottom - Style.gapsOut - height
         readonly property real belowY: root.cursorY + root.cardGap
         readonly property real aboveY: root.cursorY - height - root.cardGap
+        readonly property real availableHeight: panel.height - root.reservedTop - root.reservedBottom - Style.gapsOut * 2
+        readonly property real translationHeightLimit: Math.max(0,
+          availableHeight - contentTopInset - contentBottomInset
+          - titleArea.height - sourceLabel.implicitHeight - divider.height - resultFooter.height
+          - contentColumn.spacing * 4)
 
         width: Math.min(Style.space(440), panel.width - root.reservedLeft - root.reservedRight - Style.gapsOut * 2)
         height: Math.min(
@@ -201,6 +207,7 @@ Item {
           spacing: Style.space(10)
 
           Item {
+            id: titleArea
             width: parent.width
             height: Math.max(titleRow.implicitHeight, closeButton.implicitHeight)
 
@@ -252,6 +259,7 @@ Item {
           }
 
           Text {
+            id: sourceLabel
             width: parent.width
             text: root.sourceText
             textFormat: Text.PlainText
@@ -265,6 +273,7 @@ Item {
           }
 
           PanelSeparator {
+            id: divider
             width: parent.width
             foreground: Color.popups.text
           }
@@ -293,18 +302,33 @@ Item {
             }
           }
 
-          Text {
+          Flickable {
+            id: translationView
             visible: root.requestState === "streaming" || root.requestState === "ready"
             width: parent.width
-            text: root.translation
-            textFormat: Text.PlainText
-            color: Color.popups.text
-            font.family: Style.font.family
-            font.pixelSize: Style.font.heading
-            lineHeight: 1.18
-            wrapMode: Text.Wrap
-            maximumLineCount: 9
-            elide: Text.ElideRight
+            height: Math.min(translationText.implicitHeight, card.translationHeightLimit)
+            contentWidth: width
+            contentHeight: translationText.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.VerticalFlick
+            interactive: contentHeight > height
+
+            Controls.ScrollBar.vertical: Controls.ScrollBar {
+              policy: Controls.ScrollBar.AsNeeded
+            }
+
+            Text {
+              id: translationText
+              width: translationView.width - (translationView.interactive ? Style.space(10) : 0)
+              text: root.translation
+              textFormat: Text.PlainText
+              color: Color.popups.text
+              font.family: Style.font.family
+              font.pixelSize: Style.font.heading
+              lineHeight: 1.18
+              wrapMode: Text.Wrap
+            }
           }
 
           Text {
@@ -322,6 +346,7 @@ Item {
           }
 
           Item {
+            id: resultFooter
             visible: root.requestState === "streaming" || root.requestState === "ready"
             width: parent.width
             height: Math.max(engineLabel.implicitHeight, copyButton.implicitHeight)
