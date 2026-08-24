@@ -127,11 +127,11 @@ Panel {
   }
 
   function apiKeyStatus() {
-    if (apiKeyAction === "set") return "A new key will be stored locally."
+    if (apiKeyAction === "set") return "A new key will be stored for this Base URL."
     if (apiKeyAction === "clear") return "The stored key will be removed."
     if (usesEnvironmentKey) return "Using OPENAI_API_KEY."
     if (apiKeySource === "environment") return "OPENAI_API_KEY is used only with the official OpenAI endpoint."
-    if (apiKeySource === "file") return "A local key is configured."
+    if (apiKeySource === "file") return "A local key is configured for this Base URL."
     return "No API key configured."
   }
 
@@ -358,7 +358,7 @@ Panel {
                 visible: !root.usesEnvironmentKey
                 width: parent.width
                 password: true
-                placeholderText: root.apiKeySource === "file" ? "Replace stored API key" : "API key (optional for local servers)"
+                placeholderText: root.apiKeySource === "file" ? "Replace stored API key" : "API key (optional)"
                 foreground: root.foreground
                 enabled: !root.loading && !root.saving
                 onTextEdited: {

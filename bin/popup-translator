@@ -6,8 +6,10 @@ readonly plugin_id="io.github.legibet.popup-translator"
 readonly request_id="$(date +%s%N)-$$"
 readonly selection_limit=5000
 readonly request_timeout_seconds=45
+readonly response_limit_bytes=1048576
+readonly translation_limit_bytes=65536
 readonly shell_config="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.json"
-readonly api_key_file="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-popup-translator/api-key"
+readonly credentials_file="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-popup-translator/credentials.json"
 
 show_ui=true
 provider="bing"
@@ -210,17 +212,46 @@ translate_with_bing() {
 read_ai_api_key() {
   if [[ $ai_base_url == https://api.openai.com/v1 && -n ${OPENAI_API_KEY:-} ]]; then
     printf '%s' "$OPENAI_API_KEY"
-  elif [[ -s $api_key_file ]]; then
-    IFS= read -r REPLY <"$api_key_file"
-    printf '%s' "$REPLY"
+  elif [[ -s $credentials_file ]]; then
+    jq -er --arg baseUrl "$ai_base_url" '
+      select(.baseUrl == $baseUrl) | .apiKey | select(type == "string" and length > 0)
+    ' "$credentials_file" 2>/dev/null || true
   fi
 }
 
+is_loopback_http() {
+  local base_url="${1%/}"
+  [[ $base_url =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$) ]]
+}
+
+is_https_url() {
+  [[ $1 =~ ^https://[^[:space:]]+$ ]]
+}
+
+validate_ai_endpoint() {
+  local api_key="$1"
+
+  if is_https_url "$ai_base_url"; then
+    return
+  fi
+  if is_loopback_http "$ai_base_url" && [[ -z $api_key ]]; then
+    return
+  fi
+  if [[ -n $api_key ]]; then
+    show_error "API keys require an HTTPS Base URL."
+  else
+    show_error "Base URL must use HTTPS. HTTP is allowed only for keyless loopback servers."
+  fi
+  return 1
+}
+
 translate_with_ai() {
-  local api_key request_file header_file response_file error_file
+  local api_key request_file header_file error_file
   local stream_fd stream_pid status line data delta api_error=""
-  local published_length=0
+  local response_text="" limit_error=""
+  local response_bytes=0 published_length=0
   local -a curl_args
+  local LC_ALL=C
 
   if ! command -v curl >/dev/null 2>&1; then
     show_error "AI translation requires curl."
@@ -228,13 +259,13 @@ translate_with_ai() {
   fi
 
   api_key="$(read_ai_api_key)"
+  validate_ai_endpoint "$api_key" || return 1
 
   umask 077
   request_file="$(mktemp)"
   header_file="$(mktemp)"
-  response_file="$(mktemp)"
   error_file="$(mktemp)"
-  trap 'rm -f -- "$request_file" "$header_file" "$response_file" "$error_file"' EXIT
+  trap 'rm -f -- "$request_file" "$header_file" "$error_file"' EXIT
 
   jq -n \
     --arg model "$ai_model" \
@@ -273,21 +304,32 @@ translate_with_ai() {
 
   coproc AI_REQUEST {
     timeout "$request_timeout_seconds" \
-      curl "${curl_args[@]}" 2>"$error_file"
+      curl "${curl_args[@]}" 2>"$error_file" \
+      | head -c "$((response_limit_bytes + 1))"
   }
   stream_pid="$AI_REQUEST_PID"
   exec {stream_fd}<&"${AI_REQUEST[0]}"
 
-  while IFS= read -r -u "$stream_fd" line; do
-    printf '%s\n' "$line" >>"$response_file"
+  while IFS= read -r -u "$stream_fd" line || [[ -n $line ]]; do
+    response_bytes=$((response_bytes + ${#line} + 1))
+    if ((response_bytes > response_limit_bytes)); then
+      limit_error="AI response exceeded the 1 MiB limit."
+      break
+    fi
+    response_text+="$line"$'\n'
     [[ $line == data:* ]] || continue
-    data="${line#data: }"
+    data="${line#data:}"
+    data="${data# }"
     [[ $data != "[DONE]" ]] || continue
 
     api_error="$(jq -r '.error.message // empty' <<<"$data" 2>/dev/null)"
     delta="$(jq -r '.choices[0].delta.content // empty' <<<"$data" 2>/dev/null)"
     [[ -n $delta ]] || continue
 
+    if ((${#translation} + ${#delta} > translation_limit_bytes)); then
+      limit_error="Translation exceeded the 64 KiB limit."
+      break
+    fi
     translation+="$delta"
     if $show_ui && $ui_started \
         && ((published_length == 0 || ${#translation} - published_length >= 12)); then
@@ -297,25 +339,34 @@ translate_with_ai() {
   done
   exec {stream_fd}<&-
 
+  if [[ -n $limit_error ]]; then
+    kill "$stream_pid" 2>/dev/null || true
+    wait "$stream_pid" 2>/dev/null || true
+    show_error "$limit_error"
+    rm -f -- "$request_file" "$header_file" "$error_file"
+    trap - EXIT
+    return 1
+  fi
+
   wait "$stream_pid"
   status=$?
   translation="$(trim "$translation")"
 
   if ((status != 0)) || [[ -z $translation ]]; then
     if [[ -z $api_error ]]; then
-      api_error="$(jq -r '.error.message // empty' "$response_file" 2>/dev/null)"
+      api_error="$(jq -r '.error.message // empty' <<<"$response_text" 2>/dev/null)"
     fi
     if [[ -z $api_error ]]; then
       api_error="$(<"$error_file")"
     fi
     api_error="$(trim "$api_error")"
     show_error "${api_error:-AI translation failed. Check the Base URL, API key, model, and network.}"
-    rm -f -- "$request_file" "$header_file" "$response_file" "$error_file"
+    rm -f -- "$request_file" "$header_file" "$error_file"
     trap - EXIT
     return 1
   fi
 
-  rm -f -- "$request_file" "$header_file" "$response_file" "$error_file"
+  rm -f -- "$request_file" "$header_file" "$error_file"
   trap - EXIT
 }
 
