@@ -37,12 +37,68 @@ Item {
   readonly property int cardPadding: Style.spacing.popupPadding
   readonly property int resultDurationMs: 12000
   readonly property int requestTimeoutMs: 48000
+  readonly property int ipcPayloadLimitBytes: 262144
+  readonly property int sourceLimitCharacters: 5000
+  readonly property int sourceLimitBytes: 20000
+  readonly property int translationLimitBytes: 65536
+  readonly property int errorLimitBytes: 4096
+  readonly property int metadataLimitBytes: 512
+
+  function withinTextLimits(text, byteLimit, characterLimit) {
+    var bytes = 0
+    var characters = 0
+
+    for (var i = 0; i < text.length; ++i) {
+      var code = text.charCodeAt(i)
+      ++characters
+
+      if (code <= 0x7f) bytes += 1
+      else if (code <= 0x7ff) bytes += 2
+      else if (code >= 0xd800 && code <= 0xdbff
+          && i + 1 < text.length
+          && text.charCodeAt(i + 1) >= 0xdc00
+          && text.charCodeAt(i + 1) <= 0xdfff) {
+        bytes += 4
+        ++i
+      } else bytes += 3
+
+      if (bytes > byteLimit || characters > characterLimit) return false
+    }
+
+    return true
+  }
+
+  function boundedText(value, byteLimit, characterLimit) {
+    if (typeof value !== "string" || value.length > byteLimit) return null
+    return withinTextLimits(value, byteLimit, characterLimit) ? value : null
+  }
+
+  function finiteNumber(value, fallback) {
+    var number = Number(value)
+    return isFinite(number) ? number : fallback
+  }
 
   function open(payloadJson) {
+    if (typeof payloadJson !== "string"
+        || payloadJson.length > ipcPayloadLimitBytes
+        || !withinTextLimits(payloadJson, ipcPayloadLimitBytes, ipcPayloadLimitBytes)) return
+
     var payload = ({})
     try { payload = JSON.parse(payloadJson || "{}") || ({}) } catch (e) {}
 
-    var incomingId = String(payload.requestId || "")
+    var incomingId = boundedText(payload.requestId, 128, 128)
+    var incomingState = boundedText(payload.state, 16, 16)
+    var incomingSource = boundedText(payload.source, sourceLimitBytes, sourceLimitCharacters)
+    var incomingTranslation = boundedText(payload.translation, translationLimitBytes, translationLimitBytes)
+    var incomingError = boundedText(payload.error, errorLimitBytes, errorLimitBytes)
+    var incomingDirection = boundedText(payload.direction, metadataLimitBytes, metadataLimitBytes)
+    var incomingProvider = boundedText(payload.provider, metadataLimitBytes, metadataLimitBytes)
+    var incomingMonitor = boundedText(payload.monitor, metadataLimitBytes, metadataLimitBytes)
+    if (incomingId === null || incomingState === null || incomingSource === null
+        || incomingTranslation === null || incomingError === null || incomingDirection === null
+        || incomingProvider === null || incomingMonitor === null
+        || ["loading", "streaming", "ready", "error"].indexOf(incomingState) < 0) return
+
     var begins = payload.begin === true
     if (!incomingId) return
 
@@ -53,30 +109,29 @@ Item {
     if (begins) {
       requestId = incomingId
       dismissedRequestId = ""
-      sourceText = String(payload.source || "")
+      sourceText = incomingSource
       translation = ""
       errorText = ""
-      direction = String(payload.direction || "")
-      provider = String(payload.provider || "Bing")
-      monitorName = String(payload.monitor || "")
-      cursorX = Number(payload.x || Style.gapsOut)
-      cursorY = Number(payload.y || Style.gapsOut)
-      reservedLeft = Number(payload.reservedLeft || 0)
-      reservedTop = Number(payload.reservedTop || 0)
-      reservedRight = Number(payload.reservedRight || 0)
-      reservedBottom = Number(payload.reservedBottom || 0)
+      direction = incomingDirection
+      provider = incomingProvider
+      monitorName = incomingMonitor
+      cursorX = finiteNumber(payload.x, Style.gapsOut)
+      cursorY = finiteNumber(payload.y, Style.gapsOut)
+      reservedLeft = Math.max(0, finiteNumber(payload.reservedLeft, 0))
+      reservedTop = Math.max(0, finiteNumber(payload.reservedTop, 0))
+      reservedRight = Math.max(0, finiteNumber(payload.reservedRight, 0))
+      reservedBottom = Math.max(0, finiteNumber(payload.reservedBottom, 0))
       hovered = false
       opened = true
     }
 
     if (dismissedRequestId === incomingId) return
 
-    var incomingState = String(payload.state || "error")
-    requestState = ["loading", "streaming", "ready", "error"].indexOf(incomingState) >= 0 ? incomingState : "error"
-    if (payload.direction !== undefined) direction = String(payload.direction)
-    if (payload.provider !== undefined) provider = String(payload.provider)
-    if (requestState === "streaming" || requestState === "ready") translation = String(payload.translation || "")
-    if (requestState === "error") errorText = String(payload.error || "Translation failed.")
+    requestState = incomingState
+    direction = incomingDirection
+    provider = incomingProvider
+    if (requestState === "streaming" || requestState === "ready") translation = incomingTranslation
+    if (requestState === "error") errorText = incomingError || "Translation failed."
 
     copied = false
     if (requestState === "loading" || requestState === "streaming") {
@@ -237,6 +292,7 @@ Item {
               Text {
                 visible: root.direction !== ""
                 text: "·  " + root.direction
+                textFormat: Text.PlainText
                 color: Color.popups.text
                 opacity: 0.48
                 font.family: Style.font.family
@@ -356,6 +412,7 @@ Item {
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
               text: root.provider
+              textFormat: Text.PlainText
               color: Color.popups.text
               opacity: 0.42
               font.family: Style.font.family

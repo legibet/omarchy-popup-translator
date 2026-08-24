@@ -4,10 +4,17 @@ set -uo pipefail
 
 readonly plugin_id="io.github.legibet.popup-translator"
 readonly request_id="$(date +%s%N)-$$"
-readonly selection_limit=5000
+readonly selection_limit_characters=5000
+readonly selection_limit_bytes=20000
 readonly request_timeout_seconds=45
 readonly response_limit_bytes=1048576
 readonly translation_limit_bytes=65536
+readonly error_limit_bytes=4096
+readonly shell_config_limit_bytes=1048576
+readonly credentials_limit_bytes=16384
+readonly base_url_limit_bytes=2048
+readonly model_limit_bytes=256
+readonly api_key_limit_bytes=8192
 readonly shell_config="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.json"
 readonly credentials_file="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-popup-translator/credentials.json"
 
@@ -43,6 +50,22 @@ trim() {
   printf '%s' "$value"
 }
 
+byte_length() {
+  local LC_ALL=C
+  printf '%s' "${#1}"
+}
+
+read_limited_file() {
+  local path="$1"
+  local limit="$2"
+  local content
+  local LC_ALL=C
+
+  content="$(head -c "$((limit + 1))" "$path")"
+  ((${#content} <= limit)) || return 1
+  printf '%s' "$content"
+}
+
 usage() {
   printf '%s\n' \
     'Usage: popup-translator [--stdout] [TEXT]' \
@@ -54,10 +77,22 @@ usage() {
 }
 
 load_settings() {
+  local config output
   local values=()
 
-  [[ -f $shell_config ]] || return
-  mapfile -t values < <(jq -r --arg id "$plugin_id" '
+  [[ -f $shell_config ]] || return 0
+  config="$(read_limited_file "$shell_config" "$shell_config_limit_bytes")" || {
+    show_error "Omarchy Shell configuration is invalid or exceeds the 1 MiB limit."
+    return 1
+  }
+  output="$(jq -er \
+    --arg id "$plugin_id" \
+    --argjson baseUrlLimit "$base_url_limit_bytes" \
+    --argjson modelLimit "$model_limit_bytes" '
+    def bounded_string($limit; $fallback):
+      if type == "string" and utf8bytelength <= $limit and test("^[^[:space:]]+$")
+      then . else $fallback end;
+
     [
       (.bar.layout.left // [])[],
       (.bar.layout.center // [])[],
@@ -65,18 +100,23 @@ load_settings() {
     ]
     | map(select(.id == $id))
     | first // {}
-    | (.provider // "bing"),
-      (.targetLanguage // "zh-CN"),
-      (.aiBaseUrl // "https://api.openai.com/v1"),
-      (.aiModel // "gpt-5.6")
-  ' "$shell_config" 2>/dev/null)
+    | (if .provider == "ai" then "ai" else "bing" end),
+      (.targetLanguage as $target
+        | if ["zh-CN", "en", "ja", "ko", "fr", "de", "es"] | index($target)
+          then $target else "zh-CN" end),
+      ((.aiBaseUrl // null) | bounded_string($baseUrlLimit; "https://api.openai.com/v1")),
+      ((.aiModel // null) | bounded_string($modelLimit; "gpt-5.6"))
+  ' <<<"$config" 2>/dev/null)" || {
+    show_error "Omarchy Shell configuration is invalid or exceeds the 1 MiB limit."
+    return 1
+  }
+  mapfile -t values <<<"$output"
+  ((${#values[@]} == 4)) || return 1
 
-  [[ ${values[0]:-} == ai ]] && provider="ai"
-  case "${values[1]:-}" in
-    zh-CN | en | ja | ko | fr | de | es) configured_target="${values[1]}" ;;
-  esac
-  [[ -n ${values[2]:-} ]] && ai_base_url="${values[2]%/}"
-  [[ -n ${values[3]:-} ]] && ai_model="${values[3]}"
+  provider="${values[0]}"
+  configured_target="${values[1]}"
+  ai_base_url="${values[2]%/}"
+  ai_model="${values[3]}"
 
   if [[ $provider == ai ]]; then
     provider_name="AI · $ai_model"
@@ -174,6 +214,11 @@ panel_update() {
 
 show_error() {
   local message="$1"
+  local LC_ALL=C
+
+  if ((${#message} > error_limit_bytes)); then
+    message="Translation failed because the provider returned an oversized error."
+  fi
 
   if $show_ui; then
     if $ui_started; then
@@ -190,6 +235,7 @@ show_error() {
 
 translate_with_bing() {
   local status
+  local LC_ALL=C
 
   if ! command -v trans >/dev/null 2>&1; then
     show_error "Translation backend is missing. Run: omarchy pkg add translate-shell"
@@ -198,9 +244,15 @@ translate_with_bing() {
 
   translation="$(
     timeout "$request_timeout_seconds" \
-      trans -e bing -b -no-ansi ":$target_language" "$selected_text" 2>/dev/null
+      trans -e bing -b -no-ansi ":$target_language" "$selected_text" 2>/dev/null \
+      | head -c "$((translation_limit_bytes + 1))"
   )"
   status=$?
+
+  if ((${#translation} > translation_limit_bytes)); then
+    show_error "Translation exceeded the 64 KiB limit."
+    return 1
+  fi
   translation="$(trim "$translation")"
 
   if ((status != 0)) || [[ -z $translation ]]; then
@@ -210,31 +262,43 @@ translate_with_bing() {
 }
 
 read_ai_api_key() {
+  local credentials stored_base_url stored_api_key
+
   if [[ $ai_base_url == https://api.openai.com/v1 && -n ${OPENAI_API_KEY:-} ]]; then
+    (($(byte_length "$OPENAI_API_KEY") <= api_key_limit_bytes)) || return 1
+    [[ $OPENAI_API_KEY != *$'\r'* && $OPENAI_API_KEY != *$'\n'* ]] || return 1
     printf '%s' "$OPENAI_API_KEY"
-  elif [[ -s $credentials_file ]]; then
-    jq -er --arg baseUrl "$ai_base_url" '
-      select(.baseUrl == $baseUrl) | .apiKey | select(type == "string" and length > 0)
-    ' "$credentials_file" 2>/dev/null || true
+    return
   fi
-}
 
-is_loopback_http() {
-  local base_url="${1%/}"
-  [[ $base_url =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$) ]]
-}
+  [[ -s $credentials_file ]] || return 0
+  credentials="$(read_limited_file "$credentials_file" "$credentials_limit_bytes")" || return 1
+  jq -e \
+    --argjson baseUrlLimit "$base_url_limit_bytes" \
+    --argjson keyLimit "$api_key_limit_bytes" '
+    type == "object"
+    and (.baseUrl | type == "string" and utf8bytelength <= $baseUrlLimit)
+    and (.apiKey
+      | type == "string"
+      and length > 0
+      and utf8bytelength <= $keyLimit
+      and (test("[\\r\\n]") | not))
+  ' <<<"$credentials" >/dev/null 2>&1 || return 1
 
-is_https_url() {
-  [[ $1 =~ ^https://[^[:space:]]+$ ]]
+  stored_base_url="$(jq -r '.baseUrl' <<<"$credentials")"
+  [[ $stored_base_url == "$ai_base_url" ]] || return 0
+  stored_api_key="$(jq -r '.apiKey' <<<"$credentials")"
+  printf '%s' "$stored_api_key"
 }
 
 validate_ai_endpoint() {
   local api_key="$1"
 
-  if is_https_url "$ai_base_url"; then
+  if [[ $ai_base_url =~ ^https://[^[:space:]]+$ ]]; then
     return
   fi
-  if is_loopback_http "$ai_base_url" && [[ -z $api_key ]]; then
+  if [[ -z $api_key
+    && $ai_base_url =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$) ]]; then
     return
   fi
   if [[ -n $api_key ]]; then
@@ -258,7 +322,10 @@ translate_with_ai() {
     return 1
   fi
 
-  api_key="$(read_ai_api_key)"
+  if ! api_key="$(read_ai_api_key)"; then
+    show_error "Credentials file or OPENAI_API_KEY is invalid or too large."
+    return 1
+  fi
   validate_ai_endpoint "$api_key" || return 1
 
   umask 077
@@ -381,7 +448,7 @@ case "${1:-}" in
     ;;
 esac
 
-load_settings
+load_settings || exit 1
 
 if $show_ui; then
   capture_position
@@ -390,7 +457,11 @@ fi
 if (($# > 0)); then
   selected_text="$*"
 else
-  selected_text="$(timeout 1 wl-paste --primary --no-newline 2>/dev/null || true)"
+  selected_text="$(
+    timeout 1 wl-paste --primary --no-newline 2>/dev/null \
+      | head -c "$((selection_limit_bytes + 1))" \
+      || true
+  )"
 fi
 
 selected_text="$(trim "$selected_text")"
@@ -400,8 +471,9 @@ if [[ -z $selected_text ]]; then
   exit 1
 fi
 
-if ((${#selected_text} > selection_limit)); then
-  show_error "The highlighted text is too long. The current limit is $selection_limit characters."
+if ((${#selected_text} > selection_limit_characters
+    || $(byte_length "$selected_text") > selection_limit_bytes)); then
+  show_error "The highlighted text is too long. The current limit is $selection_limit_characters characters."
   exit 1
 fi
 

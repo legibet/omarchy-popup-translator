@@ -6,14 +6,43 @@ readonly plugin_id="io.github.legibet.popup-translator"
 readonly shell_config="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.json"
 readonly config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-popup-translator"
 readonly credentials_file="$config_dir/credentials.json"
+readonly shell_config_limit_bytes=1048576
+readonly credentials_limit_bytes=16384
+readonly settings_payload_limit_bytes=16384
+readonly base_url_limit_bytes=2048
+readonly model_limit_bytes=256
+readonly api_key_limit_bytes=8192
 
 fail() {
   printf '%s\n' "$1" >&2
   exit 1
 }
 
+read_limited_file() {
+  local path="$1"
+  local limit="$2"
+  local content
+  local LC_ALL=C
+
+  content="$(head -c "$((limit + 1))" "$path")"
+  ((${#content} <= limit)) || return 1
+  printf '%s' "$content"
+}
+
 widget_settings() {
-  jq -c --arg id "$plugin_id" '
+  local config='{}'
+
+  if [[ -f $shell_config ]]; then
+    config="$(read_limited_file "$shell_config" "$shell_config_limit_bytes")" || return 1
+  fi
+
+  jq -ce \
+    --arg id "$plugin_id" \
+    --argjson baseUrlLimit "$base_url_limit_bytes" \
+    --argjson modelLimit "$model_limit_bytes" '
+    def bounded_string($limit; $fallback):
+      if type == "string" and utf8bytelength <= $limit then . else $fallback end;
+
     [
       (.bar.layout.left // [])[],
       (.bar.layout.center // [])[],
@@ -21,60 +50,81 @@ widget_settings() {
     ]
     | map(select(.id == $id))
     | first // {}
-  ' "$shell_config"
+    | {
+        provider: (if .provider == "ai" then "ai" else "bing" end),
+        targetLanguage: (
+          .targetLanguage as $target
+          | if ["zh-CN", "en", "ja", "ko", "fr", "de", "es"] | index($target)
+            then $target else "zh-CN" end
+        ),
+        aiBaseUrl: ((.aiBaseUrl // null) | bounded_string($baseUrlLimit; "https://api.openai.com/v1")),
+        aiModel: ((.aiModel // null) | bounded_string($modelLimit; "gpt-5.6"))
+      }
+  ' <<<"$config" 2>/dev/null
+}
+
+read_credentials() {
+  local credentials
+
+  credentials="$(read_limited_file "$credentials_file" "$credentials_limit_bytes")" || return 1
+  jq -e \
+    --argjson baseUrlLimit "$base_url_limit_bytes" \
+    --argjson keyLimit "$api_key_limit_bytes" '
+    type == "object"
+    and (.baseUrl | type == "string" and utf8bytelength <= $baseUrlLimit)
+    and (.apiKey
+      | type == "string"
+      and length > 0
+      and utf8bytelength <= $keyLimit
+      and (test("[\\r\\n]") | not))
+  ' <<<"$credentials" >/dev/null 2>&1 || return 1
+  printf '%s' "$credentials"
 }
 
 api_key_source() {
   local base_url="${1%/}"
+  local credentials
+  local LC_ALL=C
 
   if [[ $base_url == https://api.openai.com/v1 && -n ${OPENAI_API_KEY:-} ]]; then
+    ((${#OPENAI_API_KEY} <= api_key_limit_bytes)) || return 1
+    [[ $OPENAI_API_KEY != *$'\r'* && $OPENAI_API_KEY != *$'\n'* ]] || return 1
     printf '%s' environment
-  elif [[ -s $credentials_file ]] && jq -e --arg baseUrl "$base_url" '
-    .baseUrl == $baseUrl and (.apiKey | type == "string" and length > 0)
-  ' "$credentials_file" >/dev/null 2>&1; then
-    printf '%s' file
+  elif [[ -s $credentials_file ]]; then
+    credentials="$(read_credentials)" || return 1
+    if [[ $(jq -r '.baseUrl' <<<"$credentials") == "$base_url" ]]; then
+      printf '%s' file
+    else
+      printf '%s' none
+    fi
   else
     printf '%s' none
   fi
 }
 
-is_loopback_http() {
-  local base_url="${1%/}"
-  [[ $base_url =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$) ]]
-}
-
-is_https_url() {
-  [[ $1 =~ ^https://[^[:space:]]+$ ]]
-}
-
 show_settings() {
   local settings source
-  settings="$(widget_settings)"
-  source="$(api_key_source "$(jq -r '.aiBaseUrl // "https://api.openai.com/v1"' <<<"$settings")")"
+  settings="$(widget_settings)" \
+    || fail "Omarchy Shell configuration is invalid or exceeds the 1 MiB limit."
+  source="$(api_key_source "$(jq -r '.aiBaseUrl' <<<"$settings")")" \
+    || fail "Credentials are invalid or exceed the 16 KiB limit."
 
-  jq -cn \
-    --argjson settings "$settings" \
-    --arg apiKeySource "$source" '
-      {
-        provider: ($settings.provider // "bing"),
-        targetLanguage: ($settings.targetLanguage // "zh-CN"),
-        aiBaseUrl: ($settings.aiBaseUrl // "https://api.openai.com/v1"),
-        aiModel: ($settings.aiModel // "gpt-5.6"),
-        apiKeySource: $apiKeySource
-      }
-    '
+  jq -cn --argjson settings "$settings" --arg apiKeySource "$source" \
+    '$settings + {apiKeySource: $apiKeySource}'
 }
 
 save_credentials() {
   local action="$1"
   local base_url="$2"
   local api_key="$3"
-  local stored_base_url=""
+  local credentials stored_base_url=""
 
   case "$action" in
     keep)
       if [[ -s $credentials_file ]]; then
-        stored_base_url="$(jq -r '.baseUrl // empty' "$credentials_file" 2>/dev/null)"
+        credentials="$(read_credentials)" \
+          || fail "Credentials are invalid or exceed the 16 KiB limit."
+        stored_base_url="$(jq -r '.baseUrl' <<<"$credentials")"
         [[ $stored_base_url == "$base_url" ]] || rm -f -- "$credentials_file"
       fi
       ;;
@@ -94,15 +144,27 @@ save_credentials() {
 
 apply_settings() {
   local payload provider target_language base_url model api_key_action api_key source
-  IFS= read -r payload
+  local https_url=false loopback_http=false
+  local LC_ALL=C
 
-  provider="$(jq -er '.provider' <<<"$payload")"
-  target_language="$(jq -er '.targetLanguage' <<<"$payload")"
-  base_url="$(jq -er '.aiBaseUrl' <<<"$payload")"
-  model="$(jq -er '.aiModel' <<<"$payload")"
-  api_key_action="$(jq -er '.apiKeyAction' <<<"$payload")"
-  api_key="$(jq -er '.apiKey // ""' <<<"$payload")"
+  IFS= read -r -n "$((settings_payload_limit_bytes + 1))" payload || [[ -n $payload ]]
+  ((${#payload} <= settings_payload_limit_bytes)) \
+    || fail "Settings payload exceeds the ${settings_payload_limit_bytes}-byte limit."
+
+  provider="$(jq -er '.provider | select(type == "string")' <<<"$payload")"
+  target_language="$(jq -er '.targetLanguage | select(type == "string")' <<<"$payload")"
+  base_url="$(jq -er '.aiBaseUrl | select(type == "string")' <<<"$payload")"
+  model="$(jq -er '.aiModel | select(type == "string")' <<<"$payload")"
+  api_key_action="$(jq -er '.apiKeyAction | select(type == "string")' <<<"$payload")"
+  api_key="$(jq -er '(.apiKey // "") | select(type == "string")' <<<"$payload")"
   base_url="${base_url%/}"
+
+  ((${#base_url} <= base_url_limit_bytes)) || fail "Base URL is too long."
+  ((${#model} <= model_limit_bytes)) || fail "Model is too long."
+  ((${#api_key} <= api_key_limit_bytes)) || fail "API key is too long."
+  [[ $base_url =~ ^https://[^[:space:]]+$ ]] && https_url=true
+  [[ $base_url =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$) ]] \
+    && loopback_http=true
 
   [[ $provider == bing || $provider == ai ]] || fail "Unknown provider."
   case "$target_language" in
@@ -110,19 +172,24 @@ apply_settings() {
     *) fail "Unknown target language." ;;
   esac
   if [[ $provider == ai ]]; then
-    if ! is_https_url "$base_url" && ! is_loopback_http "$base_url"; then
+    if ! $https_url && ! $loopback_http; then
       fail "Base URL must use HTTPS. HTTP is allowed only for loopback servers."
     fi
     [[ $model =~ ^[^[:space:]]+$ ]] || fail "Model must not contain spaces."
   fi
   [[ $api_key_action == keep || $api_key_action == set || $api_key_action == clear ]] \
     || fail "Unknown API key action."
-  [[ $api_key_action != set || -n $api_key ]] || fail "API key must not be empty."
-  if [[ $api_key_action == set ]] && ! is_https_url "$base_url"; then
+  if [[ $api_key_action == set ]]; then
+    [[ -n $api_key && $api_key != *$'\r'* && $api_key != *$'\n'* ]] \
+      || fail "API key is empty or contains a line break."
+  fi
+  if [[ $api_key_action == set ]] && ! $https_url; then
     fail "API keys require an HTTPS Base URL."
   fi
-  if ! is_https_url "$base_url" && [[ $api_key_action == keep && $(api_key_source "$base_url") == file ]]; then
-    fail "API keys require an HTTPS Base URL."
+  if [[ $api_key_action == keep ]] && ! $https_url; then
+    source="$(api_key_source "$base_url")" \
+      || fail "Credentials are invalid or exceed the 16 KiB limit."
+    [[ $source != file ]] || fail "API keys require an HTTPS Base URL."
   fi
 
   omarchy bar set "$plugin_id" provider "$provider" >/dev/null
@@ -131,7 +198,8 @@ apply_settings() {
   omarchy bar set "$plugin_id" aiModel "$model" >/dev/null
   save_credentials "$api_key_action" "$base_url" "$api_key"
 
-  source="$(api_key_source "$base_url")"
+  source="$(api_key_source "$base_url")" \
+    || fail "Credentials are invalid or exceed the 16 KiB limit."
   jq -cn --arg apiKeySource "$source" '{ok: true, apiKeySource: $apiKeySource}'
 }
 

@@ -315,6 +315,7 @@ Panel {
                 id: baseUrlField
                 width: parent.width
                 text: root.selectedAiBaseUrl
+                maximumLength: 2048
                 placeholderText: "https://api.openai.com/v1"
                 foreground: root.foreground
                 enabled: !root.loading && !root.saving
@@ -336,6 +337,7 @@ Panel {
                 id: modelField
                 width: parent.width
                 text: root.selectedAiModel
+                maximumLength: 256
                 placeholderText: "gpt-5.6"
                 foreground: root.foreground
                 enabled: !root.loading && !root.saving
@@ -358,6 +360,7 @@ Panel {
                 visible: !root.usesEnvironmentKey
                 width: parent.width
                 password: true
+                maximumLength: 8192
                 placeholderText: root.apiKeySource === "file" ? "Replace stored API key" : "API key (optional)"
                 foreground: root.foreground
                 enabled: !root.loading && !root.saving
