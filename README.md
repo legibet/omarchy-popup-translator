@@ -1,6 +1,6 @@
 # Popup Translator
 
-Translate highlighted text from Wayland apps in a compact Omarchy popup.
+Translate highlighted text from Wayland apps in an Omarchy popup.
 
 ![Popup Translator](preview.png)
 
@@ -17,13 +17,13 @@ local plugin_dir = os.getenv("HOME") .. "/.config/omarchy/plugins/io.github.legi
 o.bind("SUPER + ALT + D", "Translate highlighted text", plugin_dir .. "/bin/popup-translator")
 ```
 
-The shortcut reads the Wayland primary selection, so the current application must expose highlighted text there.
+Highlight text in a Wayland app, then press the shortcut. The app must provide highlighted text through the Wayland primary selection.
 
 ## Settings
 
-Click the translation icon in the top bar to choose Chinese, English, Japanese, Korean, French, German, or Spanish as the target language. You can use Bing or a streaming OpenAI-compatible provider.
+Click the translation icon in the top bar to choose the target language and provider. Bing works without configuration; AI supports OpenAI and OpenAI-compatible providers.
 
-AI endpoints must support streaming Chat Completions at `<base-url>/chat/completions`. API keys require HTTPS; keyless loopback servers may use HTTP. Keys entered in the panel are bound to the configured Base URL and stored at `~/.config/omarchy-popup-translator/credentials.json` with mode `0600`.
+API keys are stored locally with owner-only permissions and are used only with the Base URL they were saved for.
 
 ## Remove
 
@@ -33,7 +33,7 @@ Remove the shortcut from `~/.config/hypr/bindings.lua`, then remove the plugin:
 omarchy plugin remove io.github.legibet.popup-translator
 ```
 
-Delete the stored API key separately if you created one:
+Removing the plugin does not delete its saved API key. Delete it separately if you configured one:
 
 ```bash
 rm -f ~/.config/omarchy-popup-translator/credentials.json
