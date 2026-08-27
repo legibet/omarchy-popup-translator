@@ -10,12 +10,6 @@ Translate highlighted text from Wayland apps in a compact Omarchy popup.
 omarchy plugin add https://github.com/legibet/omarchy-popup-translator.git --enable
 ```
 
-Bing is the default provider. Install `translate-shell` before using it:
-
-```bash
-omarchy pkg add translate-shell
-```
-
 Add a shortcut to `~/.config/hypr/bindings.lua`:
 
 ```lua

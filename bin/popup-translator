@@ -7,6 +7,8 @@ readonly request_id="$(date +%s%N)-$$"
 readonly selection_limit_characters=5000
 readonly selection_limit_bytes=20000
 readonly request_timeout_seconds=45
+readonly bing_selection_limit_characters=1000
+readonly bing_request_timeout_seconds=15
 readonly response_limit_bytes=1048576
 readonly translation_limit_bytes=65536
 readonly error_limit_bytes=4096
@@ -235,29 +237,104 @@ show_error() {
 }
 
 translate_with_bing() {
-  local status
+  local page response status
+  local bing_ig bing_iid bing_key bing_token bing_target="$target_language"
+  local input_characters="${#selected_text}"
+  local -a curl_args
   local LC_ALL=C
 
-  if ! command -v trans >/dev/null 2>&1; then
-    show_error "Translation backend is missing. Run: omarchy pkg add translate-shell"
+  if ((input_characters > bing_selection_limit_characters)); then
+    show_error "Bing accepts up to 1,000 characters. Shorten the highlighted text or use AI."
     return 1
   fi
 
-  translation="$(
-    timeout "$request_timeout_seconds" \
-      trans -e bing -b -no-ansi ":$target_language" "$selected_text" 2>/dev/null \
-      | head -c "$((translation_limit_bytes + 1))"
+  if ! command -v curl >/dev/null 2>&1; then
+    show_error "Bing translation requires curl."
+    return 1
+  fi
+
+  curl_args=(
+    --silent
+    --fail-with-body
+    --location
+    --max-redirs 3
+    --proto '=https'
+    --proto-redir '=https'
+    --connect-timeout 5
+    --max-time "$bing_request_timeout_seconds"
+    --compressed
+    --user-agent 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+  )
+
+  page="$(
+    curl "${curl_args[@]}" 'https://www.bing.com/translator' 2>/dev/null \
+      | head -c "$((response_limit_bytes + 1))"
   )"
   status=$?
 
+  if ((${#page} > response_limit_bytes)); then
+    show_error "Bing returned an oversized response."
+    return 1
+  fi
+  if ((status != 0)); then
+    show_error "Translation failed. Check your network connection and try again."
+    return 1
+  fi
+
+  [[ $page =~ IG:\"([^\"]+)\" ]] && bing_ig="${BASH_REMATCH[1]}"
+  [[ $page =~ data-iid=\"([^\"]+)\" ]] && bing_iid="${BASH_REMATCH[1]}"
+  if [[ $page =~ params_AbusePreventionHelper[[:space:]]*=[[:space:]]*\[([0-9]+),\"([^\"]+)\" ]]; then
+    bing_key="${BASH_REMATCH[1]}"
+    bing_token="${BASH_REMATCH[2]}"
+  fi
+  if [[ ! ${bing_ig:-} =~ ^[[:alnum:]]{1,128}$
+    || ! ${bing_iid:-} =~ ^translator\.[0-9]{1,8}$
+    || ! ${bing_key:-} =~ ^[0-9]{1,20}$
+    || ! ${bing_token:-} =~ ^[[:alnum:]_-]{1,256}$ ]]; then
+    show_error "Bing translation is temporarily unavailable."
+    return 1
+  fi
+
+  if [[ $bing_target == zh-CN ]]; then
+    bing_target="zh-Hans"
+  fi
+
+  response="$(
+    curl "${curl_args[@]}" \
+      --header 'Content-Type: application/x-www-form-urlencoded' \
+      --data-urlencode "text=$selected_text" \
+      --data-urlencode 'fromLang=auto-detect' \
+      --data-urlencode "to=$bing_target" \
+      --data-urlencode "token=$bing_token" \
+      --data-urlencode "key=$bing_key" \
+      "https://www.bing.com/ttranslatev3?IG=$bing_ig&IID=$bing_iid" \
+      2>/dev/null \
+      | head -c "$((response_limit_bytes + 1))"
+  )"
+  status=$?
+
+  if ((${#response} > response_limit_bytes)); then
+    show_error "Bing returned an oversized response."
+    return 1
+  fi
+  if ((status != 0)); then
+    show_error "Translation failed. Check your network connection and try again."
+    return 1
+  fi
+
+  translation="$(jq -er '.[0].translations[0].text | strings | select(length > 0)' \
+    <<<"$response" 2>/dev/null)" || {
+    show_error "Bing returned an invalid translation response."
+    return 1
+  }
   if ((${#translation} > translation_limit_bytes)); then
     show_error "Translation exceeded the 64 KiB limit."
     return 1
   fi
   translation="$(trim "$translation")"
 
-  if ((status != 0)) || [[ -z $translation ]]; then
-    show_error "Translation failed. Check your network connection and try again."
+  if [[ -z $translation ]]; then
+    show_error "Bing returned an empty translation."
     return 1
   fi
 }
