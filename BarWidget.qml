@@ -21,7 +21,7 @@ Panel {
   property string saveStderr: ""
   property string pendingPayload: ""
   property string errorText: ""
-  property string statusText: ""
+  property bool saved: false
   property bool loading: false
   property bool saving: false
 
@@ -49,7 +49,7 @@ Panel {
     if (loadProcess.running || saveProcess.running) return
     loading = true
     errorText = ""
-    statusText = ""
+    saved = false
     loadStdout = ""
     loadStderr = ""
     loadProcess.running = true
@@ -92,7 +92,7 @@ Panel {
 
     saving = true
     errorText = ""
-    statusText = ""
+    saved = false
     saveStdout = ""
     saveStderr = ""
     pendingPayload = JSON.stringify({
@@ -118,19 +118,20 @@ Panel {
     apiKeyConfigured = result.apiKeyConfigured === true
     apiKeyField.text = ""
     apiKeyAction = "keep"
-    statusText = "Settings saved."
+    saved = true
   }
 
   function scrubSecret() {
     pendingPayload = ""
     apiKeyField.text = ""
     apiKeyAction = "keep"
+    saved = false
   }
 
   function apiKeyStatus() {
-    if (apiKeyAction === "set") return "A new key will be stored for this Base URL."
-    if (apiKeyAction === "clear") return "The stored key will be removed."
-    if (apiKeyConfigured) return "A local key is configured for this Base URL."
+    if (apiKeyAction === "set") return "New API key will be saved."
+    if (apiKeyAction === "clear") return "API key will be removed."
+    if (apiKeyConfigured) return "API key configured."
     return "No API key configured."
   }
 
@@ -266,7 +267,7 @@ Panel {
               enabled: !root.loading && !root.saving
               onChanged: function(value) {
                 root.selectedTargetLanguage = value
-                root.statusText = ""
+                root.saved = false
               }
             }
           }
@@ -300,7 +301,7 @@ Panel {
               enabled: !root.loading && !root.saving
               onChanged: function(value) {
                 root.selectedProvider = value
-                root.statusText = ""
+                root.saved = false
               }
             }
 
@@ -327,7 +328,7 @@ Panel {
                 enabled: !root.loading && !root.saving
                 onTextEdited: {
                   root.selectedAiBaseUrl = text
-                  root.statusText = ""
+                  root.saved = false
                 }
               }
 
@@ -349,7 +350,7 @@ Panel {
                 enabled: !root.loading && !root.saving
                 onTextEdited: {
                   root.selectedAiModel = text
-                  root.statusText = ""
+                  root.saved = false
                 }
               }
 
@@ -371,7 +372,7 @@ Panel {
                 enabled: !root.loading && !root.saving
                 onTextEdited: {
                   root.apiKeyAction = text.trim() === "" ? "keep" : "set"
-                  root.statusText = ""
+                  root.saved = false
                 }
               }
 
@@ -405,7 +406,7 @@ Panel {
                   onClicked: {
                     apiKeyField.text = ""
                     root.apiKeyAction = "clear"
-                    root.statusText = ""
+                    root.saved = false
                   }
                 }
               }
@@ -413,11 +414,11 @@ Panel {
           }
 
           Text {
-            visible: root.errorText !== "" || root.statusText !== ""
+            visible: root.errorText !== ""
             width: parent.width
-            text: root.errorText !== "" ? root.errorText : root.statusText
+            text: root.errorText
             textFormat: Text.PlainText
-            color: root.errorText !== "" ? Color.urgent : root.dim
+            color: Color.urgent
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap
@@ -427,15 +428,24 @@ Panel {
             width: parent.width
             height: saveButton.implicitHeight
 
+            TextMetrics {
+              id: savedLabelMetrics
+              text: "Saved"
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+
             Button {
               id: saveButton
               anchors.right: parent.right
-              text: "Save"
+              width: Math.ceil(savedLabelMetrics.advanceWidth)
+                + horizontalPadding * 2 + _reservedBorderLeft + _reservedBorderRight
+              text: root.saved ? "Saved" : "Save"
               bordered: true
               focusable: true
               foreground: root.foreground
               fontFamily: root.fontFamily
-              enabled: root.canSave
+              enabled: root.canSave && !root.saved
               onClicked: root.saveSettings()
             }
           }
