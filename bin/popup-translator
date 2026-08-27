@@ -342,13 +342,6 @@ translate_with_bing() {
 read_ai_api_key() {
   local credentials stored_base_url stored_api_key
 
-  if [[ $ai_base_url == https://api.openai.com/v1 && -n ${OPENAI_API_KEY:-} ]]; then
-    (($(byte_length "$OPENAI_API_KEY") <= api_key_limit_bytes)) || return 1
-    [[ $OPENAI_API_KEY != *$'\r'* && $OPENAI_API_KEY != *$'\n'* ]] || return 1
-    printf '%s' "$OPENAI_API_KEY"
-    return
-  fi
-
   [[ -s $credentials_file ]] || return 0
   [[ -d $credentials_dir && ! -L $credentials_dir ]] || return 1
   [[ -f $credentials_file && ! -L $credentials_file ]] || return 1
@@ -403,7 +396,7 @@ translate_with_ai() {
   fi
 
   if ! api_key="$(read_ai_api_key)"; then
-    show_error "Credentials file or OPENAI_API_KEY is invalid or too large."
+    show_error "Credentials file is invalid or exceeds the 16 KiB limit."
     return 1
   fi
   validate_ai_endpoint "$api_key" || return 1

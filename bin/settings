@@ -83,36 +83,32 @@ read_credentials() {
   printf '%s' "$credentials"
 }
 
-api_key_source() {
+api_key_configured() {
   local base_url="${1%/}"
   local credentials
-  local LC_ALL=C
 
-  if [[ $base_url == https://api.openai.com/v1 && -n ${OPENAI_API_KEY:-} ]]; then
-    ((${#OPENAI_API_KEY} <= api_key_limit_bytes)) || return 1
-    [[ $OPENAI_API_KEY != *$'\r'* && $OPENAI_API_KEY != *$'\n'* ]] || return 1
-    printf '%s' environment
-  elif [[ -s $credentials_file ]]; then
+  if [[ -s $credentials_file ]]; then
     credentials="$(read_credentials)" || return 1
     if [[ $(jq -r '.baseUrl' <<<"$credentials") == "$base_url" ]]; then
-      printf '%s' file
+      printf '%s' true
     else
-      printf '%s' none
+      printf '%s' false
     fi
-  else
-    printf '%s' none
+    return
   fi
+
+  printf '%s' false
 }
 
 show_settings() {
-  local settings source
+  local settings configured
   settings="$(widget_settings)" \
     || fail "Omarchy Shell configuration is invalid or exceeds the 1 MiB limit."
-  source="$(api_key_source "$(jq -r '.aiBaseUrl' <<<"$settings")")" \
+  configured="$(api_key_configured "$(jq -r '.aiBaseUrl' <<<"$settings")")" \
     || fail "Credentials are invalid or exceed the 16 KiB limit."
 
-  jq -cn --argjson settings "$settings" --arg apiKeySource "$source" \
-    '$settings + {apiKeySource: $apiKeySource}'
+  jq -cn --argjson settings "$settings" --argjson apiKeyConfigured "$configured" \
+    '$settings + {apiKeyConfigured: $apiKeyConfigured}'
 }
 
 save_credentials() {
@@ -164,7 +160,7 @@ save_credentials() {
 }
 
 apply_settings() {
-  local payload provider target_language base_url model api_key_action api_key source
+  local payload provider target_language base_url model api_key_action api_key configured
   local https_url=false loopback_http=false
   local LC_ALL=C
 
@@ -208,9 +204,9 @@ apply_settings() {
     fail "API keys require an HTTPS Base URL."
   fi
   if [[ $api_key_action == keep ]] && ! $https_url; then
-    source="$(api_key_source "$base_url")" \
+    configured="$(api_key_configured "$base_url")" \
       || fail "Credentials are invalid or exceed the 16 KiB limit."
-    [[ $source != file ]] || fail "API keys require an HTTPS Base URL."
+    [[ $configured == false ]] || fail "API keys require an HTTPS Base URL."
   fi
 
   omarchy bar set "$plugin_id" provider "$provider" >/dev/null
@@ -219,9 +215,10 @@ apply_settings() {
   omarchy bar set "$plugin_id" aiModel "$model" >/dev/null
   save_credentials "$api_key_action" "$base_url" "$api_key"
 
-  source="$(api_key_source "$base_url")" \
+  configured="$(api_key_configured "$base_url")" \
     || fail "Credentials are invalid or exceed the 16 KiB limit."
-  jq -cn --arg apiKeySource "$source" '{ok: true, apiKeySource: $apiKeySource}'
+  jq -cn --argjson apiKeyConfigured "$configured" \
+    '{ok: true, apiKeyConfigured: $apiKeyConfigured}'
 }
 
 case "${1:-}" in

@@ -13,7 +13,7 @@ Panel {
   property string selectedTargetLanguage: "zh-CN"
   property string selectedAiBaseUrl: "https://api.openai.com/v1"
   property string selectedAiModel: "gpt-5.6"
-  property string apiKeySource: "none"
+  property bool apiKeyConfigured: false
   property string apiKeyAction: "keep"
   property string loadStdout: ""
   property string loadStderr: ""
@@ -41,10 +41,6 @@ Panel {
   readonly property string settingsCommand: decodeURIComponent(
     String(Qt.resolvedUrl("bin/settings")).replace(/^file:\/\//, ""))
   readonly property bool aiSelected: selectedProvider === "ai"
-  readonly property bool officialOpenaiEndpoint:
-    selectedAiBaseUrl.trim().replace(/\/$/, "") === "https://api.openai.com/v1"
-  readonly property bool usesEnvironmentKey:
-    apiKeySource === "environment" && officialOpenaiEndpoint
   readonly property bool canSave: !loading && !saving
     && (!aiSelected
       || (selectedAiBaseUrl.trim() !== "" && selectedAiModel.trim() !== ""))
@@ -76,8 +72,7 @@ Panel {
       selectedAiModel = String(values.aiModel || "gpt-5.6")
       baseUrlField.text = selectedAiBaseUrl
       modelField.text = selectedAiModel
-      apiKeySource = ["environment", "file"].indexOf(values.apiKeySource) >= 0
-        ? values.apiKeySource : "none"
+      apiKeyConfigured = values.apiKeyConfigured === true
       apiKeyAction = "keep"
       apiKeyField.text = ""
     } catch (e) {
@@ -113,8 +108,7 @@ Panel {
       return
     }
 
-    apiKeySource = ["environment", "file"].indexOf(result.apiKeySource) >= 0
-      ? result.apiKeySource : "none"
+    apiKeyConfigured = result.apiKeyConfigured === true
     apiKeyField.text = ""
     apiKeyAction = "keep"
     statusText = "Settings saved."
@@ -129,9 +123,7 @@ Panel {
   function apiKeyStatus() {
     if (apiKeyAction === "set") return "A new key will be stored for this Base URL."
     if (apiKeyAction === "clear") return "The stored key will be removed."
-    if (usesEnvironmentKey) return "Using OPENAI_API_KEY."
-    if (apiKeySource === "environment") return "OPENAI_API_KEY is used only with the official OpenAI endpoint."
-    if (apiKeySource === "file") return "A local key is configured for this Base URL."
+    if (apiKeyConfigured) return "A local key is configured for this Base URL."
     return "No API key configured."
   }
 
@@ -357,11 +349,10 @@ Panel {
 
               TextField {
                 id: apiKeyField
-                visible: !root.usesEnvironmentKey
                 width: parent.width
                 password: true
                 maximumLength: 8192
-                placeholderText: root.apiKeySource === "file" ? "Replace stored API key" : "API key (optional)"
+                placeholderText: root.apiKeyConfigured ? "Replace stored API key" : "API key (optional)"
                 foreground: root.foreground
                 enabled: !root.loading && !root.saving
                 onTextEdited: {
@@ -389,7 +380,7 @@ Panel {
 
                 Button {
                   id: removeKeyButton
-                  visible: root.apiKeySource === "file" && root.apiKeyAction !== "clear"
+                  visible: root.apiKeyConfigured && root.apiKeyAction !== "clear"
                   anchors.right: parent.right
                   anchors.verticalCenter: parent.verticalCenter
                   text: "Remove"

@@ -23,7 +23,7 @@ The shortcut reads the Wayland primary selection, so the current application mus
 
 Click the translation icon in the top bar to choose Chinese, English, Japanese, Korean, French, German, or Spanish as the target language. You can use Bing or a streaming OpenAI-compatible provider.
 
-AI endpoints must support streaming Chat Completions at `<base-url>/chat/completions`. API keys require HTTPS; keyless loopback servers may use HTTP. The official OpenAI endpoint can read `OPENAI_API_KEY` from the Omarchy Shell environment. Keys entered in the panel are bound to the configured Base URL and stored at `~/.config/omarchy-popup-translator/credentials.json` with mode `0600`.
+AI endpoints must support streaming Chat Completions at `<base-url>/chat/completions`. API keys require HTTPS; keyless loopback servers may use HTTP. Keys entered in the panel are bound to the configured Base URL and stored at `~/.config/omarchy-popup-translator/credentials.json` with mode `0600`.
 
 ## Remove
 
