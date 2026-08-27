@@ -55,6 +55,20 @@ Panel {
     loadProcess.running = true
   }
 
+  function restoreForm(values) {
+    selectedProvider = values.provider === "ai" ? "ai" : "bing"
+    selectedTargetLanguage = targetLanguageOptions.some(function(option) {
+      return option.value === values.targetLanguage
+    }) ? values.targetLanguage : "zh-CN"
+    selectedAiBaseUrl = String(values.aiBaseUrl || "https://api.openai.com/v1")
+    selectedAiModel = String(values.aiModel || "gpt-5.6")
+
+    providerDropdown.value = selectedProvider
+    targetLanguageDropdown.value = selectedTargetLanguage
+    baseUrlField.text = selectedAiBaseUrl
+    modelField.text = selectedAiModel
+  }
+
   function finishLoad(exitCode) {
     loading = false
     if (exitCode !== 0) {
@@ -64,14 +78,7 @@ Panel {
 
     try {
       var values = JSON.parse(loadStdout)
-      selectedProvider = values.provider === "ai" ? "ai" : "bing"
-      selectedTargetLanguage = targetLanguageOptions.some(function(option) {
-        return option.value === values.targetLanguage
-      }) ? values.targetLanguage : "zh-CN"
-      selectedAiBaseUrl = String(values.aiBaseUrl || "https://api.openai.com/v1")
-      selectedAiModel = String(values.aiModel || "gpt-5.6")
-      baseUrlField.text = selectedAiBaseUrl
-      modelField.text = selectedAiModel
+      restoreForm(values)
       apiKeyConfigured = values.apiKeyConfigured === true
       apiKeyAction = "keep"
       apiKeyField.text = ""
@@ -130,11 +137,16 @@ Panel {
   implicitWidth: barButton.implicitWidth
   implicitHeight: barButton.implicitHeight
 
+  onSettingsChanged: {
+    if (!opened) restoreForm(settings || ({}))
+  }
+
   onOpenedChanged: {
     if (opened) {
       loadSettings()
       Qt.callLater(function() { panelFocus.forceActiveFocus() })
     } else {
+      restoreForm(settings || ({}))
       scrubSecret()
     }
   }
@@ -244,6 +256,7 @@ Panel {
             }
 
             Dropdown {
+              id: targetLanguageDropdown
               width: parent.width
               label: "Target language"
               value: root.selectedTargetLanguage
@@ -274,6 +287,7 @@ Panel {
             }
 
             Dropdown {
+              id: providerDropdown
               width: parent.width
               label: "Translation provider"
               value: root.selectedProvider
