@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.legibet.popup-translator",
   "name": "Popup Translator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "legibet",
   "license": "MIT",
-  "description": "Translate highlighted text in a compact popup with a keyboard shortcut",
+  "description": "Translate highlighted Wayland text in a popup with a keyboard shortcut",
   "kinds": ["bar-widget", "panel"],
   "keepLoaded": true,
   "entryPoints": {
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Popup Translator",
-    "description": "Configure popup translation",
+    "description": "Translate clipboard text and configure providers",
     "category": "Productivity",
     "allowMultiple": false,
     "defaultSection": "right",

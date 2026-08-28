@@ -22,6 +22,7 @@ readonly credentials_dir="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-popup-transl
 readonly credentials_file="$credentials_dir/credentials.json"
 
 show_ui=true
+read_clipboard=false
 provider="bing"
 provider_name="Bing"
 configured_target="zh-CN"
@@ -71,12 +72,13 @@ read_limited_file() {
 
 usage() {
   printf '%s\n' \
-    'Usage: popup-translator [--stdout] [TEXT]' \
+    'Usage: popup-translator [--stdout] [--clipboard] [TEXT]' \
     '' \
-    'Without TEXT, translate the text currently highlighted in Wayland.' \
+    'Without TEXT, translate the Wayland primary selection.' \
+    'Use --clipboard to translate the regular clipboard instead.' \
     'The source language is detected by the translation provider.' \
     '' \
-    'Open the Popup Translator bar icon to configure language and provider.'
+    'Right-click the Popup Translator bar icon to configure language and provider.'
 }
 
 load_settings() {
@@ -510,16 +512,29 @@ translate_with_ai() {
   trap - EXIT
 }
 
-case "${1:-}" in
-  --stdout)
-    show_ui=false
-    shift
-    ;;
-  -h | --help)
-    usage
-    exit 0
-    ;;
-esac
+while (($# > 0)); do
+  case "$1" in
+    --stdout)
+      show_ui=false
+      shift
+      ;;
+    --clipboard)
+      read_clipboard=true
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 load_settings || exit 1
 
@@ -529,6 +544,12 @@ fi
 
 if (($# > 0)); then
   selected_text="$*"
+elif $read_clipboard; then
+  selected_text="$(
+    timeout 1 wl-paste --type text --no-newline 2>/dev/null \
+      | head -c "$((selection_limit_bytes + 1))" \
+      || true
+  )"
 else
   selected_text="$(
     timeout 1 wl-paste --primary --no-newline 2>/dev/null \
@@ -540,13 +561,21 @@ fi
 selected_text="$(trim "$selected_text")"
 
 if [[ -z $selected_text ]]; then
-  show_error "No highlighted text found. Highlight some text and try again."
+  if $read_clipboard; then
+    show_error "The clipboard does not contain text. Copy some text and try again."
+  else
+    show_error "No highlighted text found. Highlight some text and try again."
+  fi
   exit 1
 fi
 
 if ((${#selected_text} > selection_limit_characters
     || $(byte_length "$selected_text") > selection_limit_bytes)); then
-  show_error "The highlighted text is too long. The current limit is $selection_limit_characters characters."
+  if $read_clipboard; then
+    show_error "The clipboard text is too long. The current limit is $selection_limit_characters characters."
+  else
+    show_error "The highlighted text is too long. The current limit is $selection_limit_characters characters."
+  fi
   exit 1
 fi
 

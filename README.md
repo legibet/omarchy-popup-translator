@@ -10,6 +10,8 @@ Translate highlighted text from Wayland apps in an Omarchy popup.
 omarchy plugin add https://github.com/legibet/omarchy-popup-translator.git --enable
 ```
 
+## Keyboard Shortcut
+
 Add a shortcut to `~/.config/hypr/bindings.lua`:
 
 ```lua
@@ -17,17 +19,21 @@ local plugin_dir = os.getenv("HOME") .. "/.config/omarchy/plugins/io.github.legi
 o.bind("SUPER + ALT + D", "Translate highlighted text", plugin_dir .. "/bin/popup-translator")
 ```
 
-Highlight text in a Wayland app, then press the shortcut. The app must provide highlighted text through the Wayland primary selection.
+Highlight text in a Wayland app, then press the shortcut.
+
+## Translate from the Bar
+
+Copy text, then left-click the translation icon in the top bar to translate the clipboard.
 
 ## Settings
 
-Click the translation icon in the top bar to choose the target language and provider. Bing works without configuration; AI supports OpenAI and OpenAI-compatible providers.
+Right-click the translation icon to choose the target language and provider. Bing works without configuration. AI supports OpenAI and OpenAI-compatible providers.
 
-API keys are stored locally with owner-only permissions and are used only with the Base URL they were saved for.
+API keys are stored locally with owner-only permissions and sent only to the Base URL they were saved for.
 
 ## Remove
 
-Remove the shortcut from `~/.config/hypr/bindings.lua`, then remove the plugin:
+If you added the keyboard shortcut, remove it from `~/.config/hypr/bindings.lua`. Then remove the plugin:
 
 ```bash
 omarchy plugin remove io.github.legibet.popup-translator

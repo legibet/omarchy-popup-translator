@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
@@ -40,6 +41,8 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string settingsCommand: decodeURIComponent(
     String(Qt.resolvedUrl("bin/settings")).replace(/^file:\/\//, ""))
+  readonly property string translatorCommand: decodeURIComponent(
+    String(Qt.resolvedUrl("bin/popup-translator")).replace(/^file:\/\//, ""))
   readonly property bool aiSelected: selectedProvider === "ai"
   readonly property bool canSave: !loading && !saving
     && (!aiSelected
@@ -195,9 +198,12 @@ Panel {
     bar: root.bar
     text: "󰗊"
     active: root.opened
-    tooltipText: "Popup Translator · Click to configure"
+    tooltipText: "Translate clipboard · Right-click for settings"
     onPressed: function(buttonCode) {
-      if (buttonCode === Qt.LeftButton || buttonCode === Qt.RightButton) root.toggle()
+      if (buttonCode === Qt.LeftButton)
+        Quickshell.execDetached([root.translatorCommand, "--clipboard"])
+      else if (buttonCode === Qt.RightButton)
+        root.toggle()
     }
   }
 
